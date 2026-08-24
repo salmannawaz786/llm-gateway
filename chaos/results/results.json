@@ -1,0 +1,68 @@
+{
+  "Degraded provider (30% error rate)": [
+    {
+      "label": "naive (retry only)",
+      "success_rate": 0.9675,
+      "p50_ms": 62.7,
+      "p95_ms": 235.8,
+      "p99_ms": 3066.1,
+      "mean_ms": 212.8,
+      "upstream_calls": 587,
+      "requests": 400
+    },
+    {
+      "label": "gateway",
+      "success_rate": 1.0,
+      "p50_ms": 59.9,
+      "p95_ms": 63.5,
+      "p99_ms": 3010.3,
+      "mean_ms": 119.5,
+      "upstream_calls": 546,
+      "requests": 400
+    }
+  ],
+  "Tail latency: p95 (10% of requests take 2s)": [
+    {
+      "label": "hedging off",
+      "success_rate": 1.0,
+      "p50_ms": 62.1,
+      "p95_ms": 2004.1,
+      "p99_ms": 2019.5,
+      "mean_ms": 261.2,
+      "upstream_calls": 400,
+      "requests": 400
+    },
+    {
+      "label": "hedging on (41 fired, 41 won)",
+      "success_rate": 1.0,
+      "p50_ms": 61.4,
+      "p95_ms": 264.4,
+      "p99_ms": 275.4,
+      "mean_ms": 82.0,
+      "upstream_calls": 441,
+      "requests": 400
+    }
+  ],
+  "Total outage: load inflicted upstream": [
+    {
+      "label": "naive (retry only)",
+      "success_rate": 0.0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "mean_ms": null,
+      "upstream_calls": 900,
+      "requests": 300
+    },
+    {
+      "label": "gateway (budget + breaker)",
+      "success_rate": 0.0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "mean_ms": null,
+      "upstream_calls": 50,
+      "requests": 300
+    }
+  ]
+}

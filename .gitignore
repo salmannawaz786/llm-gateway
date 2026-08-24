@@ -12,4 +12,4 @@ dist/
 build/
 *.egg-info/
 .models/
-chaos/results/
+# chaos/results/ IS committed: the README renders chaos.svg from it.
