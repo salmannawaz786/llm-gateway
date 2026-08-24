@@ -259,3 +259,77 @@ If someone asks how you built it: *"I used AI heavily for the boilerplate, then
 went through the reliability logic carefully until I understood it — that part
 I can walk you through in detail."* That's honest, and it's a better answer
 than most candidates give.
+
+---
+
+## Part 4 — defending the benchmarks
+
+Numbers invite scrutiny in a way prose doesn't. Expect these.
+
+### "How do I know this isn't rigged?"
+
+> Every scenario is an A/B where both sides face the same provider profile and
+> the same random seed. The only variable is the reliability layer. And the
+> naive baseline isn't a straw man — it retries and it backs off, it just
+> lacks the system-level mechanisms.
+>
+> I also report upstream call counts next to latency, so the cost of each
+> mechanism is visible. Hedging cut p95 by 7.4× for 10% more upstream calls —
+> if I'd only shown the latency, I'd be hiding the price.
+
+Volunteering the cost axis is what makes the numbers credible.
+
+### "Your p99 is 3000ms in BOTH rows of the degraded test. Why didn't hedging fix that?"
+
+**Know this one cold — it's the sharpest question the data invites.**
+
+> Because with two providers, hedging only protects the *first* one.
+>
+> The path is: primary fails (30% of the time), so we fail over to the backup.
+> Now the backup is the only provider left — there's nothing to hedge with, so
+> if it draws a slow response we just have to wait. That's roughly 30% × 5% ≈
+> 1.5% of requests, which is exactly where p99 lands.
+>
+> It shows up at p99 and not p95 because it's a ~1.5% event. The fix would be a
+> third provider, or re-hedging against the primary once its circuit recovers.
+
+This is a strong answer because you're explaining a weakness in your own
+results rather than being caught by it.
+
+### "Nobody succeeds in your outage scenario. Isn't that a failed test?"
+
+> No — that's the scenario. The provider is 100% down, so no strategy can
+> succeed. The question isn't "who stays up," it's "who makes the outage
+> worse." The naive loop sends 900 upstream calls for 300 requests; the gateway
+> sends 50. Tripling load on a provider that's already failing is how a partial
+> outage becomes a total one.
+
+### "Why not use matplotlib for the chart?"
+
+> Keeping the benchmark dependency-free matters — it's the thing I most want
+> people to actually run. SVG also renders natively on GitHub in both light and
+> dark themes, and a PNG doesn't.
+
+### "These are mock numbers, not real providers."
+
+Concede immediately. Don't defend.
+
+> Correct, and I wouldn't present them as real-world figures. They measure the
+> gateway's *behaviour* under controlled failure — which is the only way to
+> measure it, since I can't make a real provider fail 30% of requests on
+> demand. The latency distribution is modelled two-mode, fast with a heavy
+> tail, because a uniform distribution would make hedging look useless.
+
+That last sentence is worth memorising: it proves you thought about whether
+your simulation was *fair*, which is the actual concern behind the question.
+
+### Things to be honest about
+
+- Breaker and budget state is per-process, so N replicas means N independent
+  breakers.
+- The hedge delay is static config; it should track a rolling p95 per provider.
+- The benchmark runs in-process, so it excludes HTTP and serialisation
+  overhead. It measures the reliability layer, not end-to-end service latency.
+
+Naming your own limitations before you're asked reads as confidence. Being
+caught by one reads as the opposite.
