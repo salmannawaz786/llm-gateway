@@ -65,6 +65,10 @@ Most LLM proxies focus on routing and cost tracking. This one focuses on the har
 | Circuit breaker | Paying a full timeout per doomed request | — |
 | Single-flight | A cache stampede on a cold key | Caching alone doesn't help when everyone misses at once |
 
+Hedging is the centrepiece. Tail latency usually comes from one unlucky *instance*, not a
+slow *service* — so the fix is to stop waiting and ask someone else, while keeping the
+original in flight in case it lands first.
+
 ## Providers
 
 Two adapters ship, proving the abstraction holds across genuinely different
@@ -103,10 +107,6 @@ counters, and circuit-breaker state per provider.
 Every label has a small bounded value set. A label carrying prompts or user ids
 would grow time series until scrapes time out — cardinality explosion takes
 down monitoring exactly when it is needed.
-
-Hedging is the centrepiece. Tail latency usually comes from one unlucky *instance*, not a
-slow *service* — so the fix is to stop waiting and ask someone else, while keeping the
-original in flight in case it lands first.
 
 ## The semantic cache
 

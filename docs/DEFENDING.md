@@ -434,3 +434,114 @@ A reviewer will flag this — have the answer ready.
   `tenant alpha` vs `tenant beta` still rely on the threshold.
 - Cache state is per-process, so N replicas means N independent caches.
 - The traffic replay uses a synthetic Zipf model, not real production traffic.
+
+---
+
+## Part 6 — defending the adapters and metrics
+
+### "Why one adapter for Groq and a separate one for Gemini?"
+
+> Because Groq speaks the OpenAI wire format and Gemini doesn't. Groq, Together,
+> Fireworks, OpenRouter, vLLM and Ollama all expose the same shape, so one
+> adapter covers them by changing a base URL.
+>
+> Gemini is genuinely different: messages are `contents` with `parts`, the
+> assistant role is called "model", there's no system role at all — it's a
+> separate top-level field — and auth is a header rather than a bearer token.
+>
+> That's actually why I wrote it. Two providers with the same wire format
+> doesn't prove an abstraction holds. One that's shaped completely differently
+> does, and none of that difference leaks past the adapter file.
+
+### "How do you test an API you have no key for?"
+
+> `httpx.MockTransport`. It intercepts at the transport layer inside httpx, so
+> the adapter's real code runs — request building, auth headers, status
+> mapping, SSE parsing — against recorded response bodies. The only thing
+> stubbed is the socket.
+>
+> That matters because the alternative, mocking the provider class itself,
+> tests nothing but the mock.
+
+### "Talk me through the error mapping."
+
+> It's the contract between a provider and the reliability layer, and getting
+> it wrong fails silently.
+>
+> 429 becomes a rate-limit error carrying `Retry-After`, because the provider
+> knows its own capacity better than my backoff formula. 5xx and timeouts are
+> transient — retryable, and they count against the circuit breaker. Everything
+> else in 4xx is permanent: a 401 won't fix itself, and retrying a malformed
+> request just drains the retry budget.
+>
+> Permanent errors also don't count against the breaker, deliberately. Otherwise
+> one client sending bad requests could trip the breaker and take a healthy
+> provider offline for everyone.
+
+### "Tell me about a bug in the adapters." — strong answer
+
+> My adapter tests let you inject an `httpx.AsyncClient`, which seemed clean for
+> testability. But the provider only attached the Authorization header to
+> clients it built itself — so every injected client had **no auth header at
+> all**. The tests were exercising a code path that could never authenticate,
+> and they'd have passed even if auth were completely broken.
+>
+> I caught it by asserting on the header rather than just the response body. The
+> fix was to inject the *transport* instead and keep the client and its auth
+> owned by the provider, so auth isn't something a caller can accidentally opt
+> out of.
+
+The lesson generalises: **be suspicious of test seams that let you replace the
+thing you're supposed to be testing.**
+
+### "Why bounded labels on the metrics?"
+
+> Cardinality. Every distinct label combination is a separate time series, so a
+> label carrying prompts, user ids, or anything client-controlled grows series
+> without limit until scrapes time out — and monitoring dies exactly when you
+> need it. Every label here has a small fixed value set: provider names come
+> from config, outcomes from an enum.
+>
+> I also set explicit histogram buckets. The library default tops out at 10
+> seconds, which dumps every slow LLM call into `+Inf` and makes p99 useless.
+
+### "Why is the metrics registry not the global default?"
+
+> The default registry is process-wide mutable state. Importing the module
+> twice, or running two app instances in one process during tests, raises
+> "Duplicated timeseries". A private registry makes the module importable
+> anywhere without that hazard.
+
+### "Why do hedge counters use delta arithmetic?"
+
+> The executor owns plain integers and deliberately doesn't import the metrics
+> module — keeping the reliability layer free of observability dependencies
+> makes it much easier to test. So the metrics layer samples those cumulative
+> values at scrape time and converts them to increments.
+>
+> It has to be deltas because a Counter may only ever increase. My first version
+> reached into `._value.set()`, which is private API and would silently break
+> `rate()` if the value ever moved backwards. There's a test asserting the
+> counters never decrease.
+
+### More bugs worth mentioning
+
+Both were found by *using* the thing, not by reading it:
+
+> I sent three identical requests and got three cache misses. The cache's
+> temperature ceiling was 0.3, but the OpenAI-compatible default temperature is
+> 0.7 — so the cache never engaged for a default request. It was effectively
+> dead code. I raised the ceiling to 0.8, which still excludes the genuinely
+> creative range.
+>
+> The same smoke test showed those skips being reported as cache *misses* in the
+> metrics. That's worse than it sounds: a dashboard would show a cache that was
+> never consulted as one that was working badly.
+
+And one about configuration precedence:
+
+> My config had a default similarity threshold of 0.92, which silently shadowed
+> the 0.72 that the calibration harness derives from the labelled set. I was
+> tuning a value the running service never used. The config default is now
+> None, meaning "use the embedder's calibrated value", and you set it only to
+> override deliberately.
