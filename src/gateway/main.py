@@ -17,10 +17,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from gateway.cache.semantic import SemanticCache
 from gateway.config import get_settings
 from gateway.providers.mock import MockBehaviour, MockProvider
 from gateway.reliability.budget import RetryBudget
 from gateway.reliability.executor import ReliableExecutor
+from gateway.service import GatewayService
 from gateway.types import (
     ChatRequest,
     ChunkType,
@@ -60,7 +62,7 @@ class ChatCompletionRequest(BaseModel):
         )
 
 
-def build_executor() -> ReliableExecutor:
+def build_service() -> GatewayService:
     """Assemble the provider pool.
 
     Mock providers are the default so the gateway runs with zero API keys.
@@ -71,7 +73,7 @@ def build_executor() -> ReliableExecutor:
         MockProvider("mock-primary", MockBehaviour.healthy()),
         MockProvider("mock-backup", MockBehaviour.healthy()),
     ]
-    return ReliableExecutor(
+    executor = ReliableExecutor(
         providers,
         hedge_delay_s=settings.hedge_delay_ms / 1000,
         max_retries=settings.max_retries,
@@ -80,6 +82,15 @@ def build_executor() -> ReliableExecutor:
         breaker_recovery_seconds=settings.breaker_recovery_seconds,
         request_timeout_s=settings.request_timeout_s,
     )
+    cache = (
+        SemanticCache(
+            threshold=settings.cache_similarity_threshold,
+            max_entries=settings.cache_max_entries,
+        )
+        if settings.cache_enabled
+        else None
+    )
+    return GatewayService(executor, cache)
 
 
 @asynccontextmanager
@@ -91,10 +102,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     common performance bug in Python services: it throws away connection reuse
     and forces a fresh TLS handshake every time.
     """
-    app.state.executor = build_executor()
-    log.info("gateway.started", providers=[p.name for p in app.state.executor.providers])
+    app.state.service = build_service()
+    log.info(
+        "gateway.started",
+        providers=[p.name for p in app.state.service.executor.providers],
+        cache=app.state.service.cache is not None,
+    )
     yield
-    await app.state.executor.aclose()
+    await app.state.service.aclose()
     log.info("gateway.stopped")
 
 
@@ -103,23 +118,36 @@ app = FastAPI(title="LLM Gateway", version="0.1.0", lifespan=lifespan)
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
-    executor: ReliableExecutor = app.state.executor
-    return {
+    service: GatewayService = app.state.service
+    executor = service.executor
+    body: dict[str, Any] = {
         "status": "ok",
         "providers": {name: b.state.value for name, b in executor.breakers.items()},
         "retry_budget": executor.budget.stats,
         "hedges": {"fired": executor.hedges_fired, "won": executor.hedges_won},
     }
+    if service.cache is not None:
+        s = service.cache.stats
+        body["cache"] = {
+            "embedder": service.cache.embedder.name,
+            "threshold": service.cache.threshold,
+            "entries": len(service.cache),
+            "hit_rate": round(s.hit_rate, 4),
+            "hits": s.hits,
+            "misses": s.misses,
+            "tokens_saved": s.tokens_saved,
+        }
+    return body
 
 
 @app.post("/v1/chat/completions")
 async def chat_completions(body: ChatCompletionRequest) -> Any:
-    executor: ReliableExecutor = app.state.executor
+    service: GatewayService = app.state.service
     request = body.to_domain()
 
     if body.stream:
         return StreamingResponse(
-            _sse(executor, request),
+            _sse(service.executor, request),
             media_type="text/event-stream",
             # Proxies love to buffer streamed responses, which defeats the
             # entire point of streaming. This header asks nginx not to.
@@ -127,7 +155,7 @@ async def chat_completions(body: ChatCompletionRequest) -> Any:
         )
 
     try:
-        response = await executor.complete(request)
+        response = await service.complete(request)
     except PermanentProviderError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GatewayError as exc:
@@ -137,6 +165,7 @@ async def chat_completions(body: ChatCompletionRequest) -> Any:
         "model": response.model,
         "provider": response.provider,
         "cached": response.cached,
+        "cache_similarity": response.cache_similarity,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": response.content}}],
         "usage": {
             "prompt_tokens": response.usage.prompt_tokens,

@@ -3,21 +3,21 @@
     {
       "label": "naive (retry only)",
       "success_rate": 0.9675,
-      "p50_ms": 62.7,
-      "p95_ms": 235.8,
-      "p99_ms": 3066.1,
-      "mean_ms": 212.8,
+      "p50_ms": 63.4,
+      "p95_ms": 237.0,
+      "p99_ms": 3069.0,
+      "mean_ms": 214.2,
       "upstream_calls": 587,
       "requests": 400
     },
     {
       "label": "gateway",
       "success_rate": 1.0,
-      "p50_ms": 59.9,
-      "p95_ms": 63.5,
-      "p99_ms": 3010.3,
-      "mean_ms": 119.5,
-      "upstream_calls": 546,
+      "p50_ms": 61.7,
+      "p95_ms": 63.4,
+      "p99_ms": 3015.5,
+      "mean_ms": 113.9,
+      "upstream_calls": 549,
       "requests": 400
     }
   ],
@@ -26,8 +26,8 @@
       "label": "hedging off",
       "success_rate": 1.0,
       "p50_ms": 62.1,
-      "p95_ms": 2004.1,
-      "p99_ms": 2019.5,
+      "p95_ms": 2006.1,
+      "p99_ms": 2007.8,
       "mean_ms": 261.2,
       "upstream_calls": 400,
       "requests": 400
@@ -35,10 +35,10 @@
     {
       "label": "hedging on (41 fired, 41 won)",
       "success_rate": 1.0,
-      "p50_ms": 61.4,
-      "p95_ms": 264.4,
-      "p99_ms": 275.4,
-      "mean_ms": 82.0,
+      "p50_ms": 62.5,
+      "p95_ms": 268.0,
+      "p99_ms": 270.0,
+      "mean_ms": 83.4,
       "upstream_calls": 441,
       "requests": 400
     }

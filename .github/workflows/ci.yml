@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test the declared floor and the current release. A project that
+        # claims >=3.12 support should prove it rather than assume it.
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: mypy
+
+      - name: Test
+        run: pytest -q
+
+      # The benchmarks are part of CI because the README quotes their output.
+      # If a change breaks them, the numbers on the front page are stale and
+      # the build should say so.
+      - name: Reliability benchmarks
+        run: python -m chaos.run
+
+      - name: Cache calibration
+        run: python -m chaos.cache_bench

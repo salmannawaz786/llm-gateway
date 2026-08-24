@@ -333,3 +333,104 @@ your simulation was *fair*, which is the actual concern behind the question.
 
 Naming your own limitations before you're asked reads as confidence. Being
 caught by one reads as the opposite.
+
+---
+
+## Part 5 — defending the semantic cache
+
+### "Walk me through the cache."
+
+> It embeds the prompt and serves a stored response when a previous prompt is
+> close enough in vector space. But the interesting part isn't the lookup, it's
+> the evaluation — because a hit rate on its own is meaningless. Set the
+> threshold to zero and you get a 100% hit rate and a completely broken
+> product.
+>
+> So I built a labelled set of paraphrases and hard negatives, swept the
+> threshold, and picked the operating point deliberately: 0.72, giving 100%
+> precision at 80% recall.
+
+### "Why optimise for precision instead of F1?"
+
+> Because F1 assumes a false positive and a false negative cost the same, and
+> here they really don't. A false miss costs one API call. A false hit returns
+> **the wrong answer to a user** — that's a correctness bug, and no amount of
+> cost saving justifies it. So I take perfect precision first, then whatever
+> recall I can get under that constraint.
+
+### "Tell me about a bug you found." — use this one
+
+**This is the strongest story in the project. It shows measurement catching a
+design flaw, a correct diagnosis, and a structural fix.**
+
+> My cache benchmark reported a ~92% hit rate no matter how diverse I made the
+> traffic — 200 distinct prompts or 6000, the number barely moved. That's
+> impossible. If most prompts are unique, most requests have to miss.
+>
+> The cause was prompts that differ only by an identifier. `restart service 41`
+> and `restart service 87` are about 99% similar under any embedder, because
+> the one token that distinguishes them is the one carrying the least lexical
+> weight. The cache was serving one tenant's answer to another.
+>
+> What I found interesting is that raising the threshold doesn't fix it. It
+> destroys recall on genuine paraphrases while *still* leaking false hits,
+> because you're asking a similarity score to make a distinction it structurally
+> can't make.
+>
+> So the fix isn't a tuning knob. I extract identifiers from the prompt and make
+> them part of the cache namespace, so prompts about different entities are
+> never compared regardless of their vectors. Semantic matching for wording,
+> exact matching for entities. After that the hit rate falls from 88% to 55% as
+> traffic diversifies, which is what it should have looked like all along.
+
+If they ask how you caught it: *"The flat curve was the tell. A number that
+doesn't move when the input changes is usually measuring the wrong thing."*
+
+### "Why is a single-flight layer needed if you have a cache?"
+
+> Because caching does nothing at the moment it's needed most. If a popular
+> prompt arrives 50 times simultaneously on a cold cache, all 50 miss, all 50
+> hit the provider, and 49 responses get thrown away. Single-flight collapses
+> identical concurrent requests into one upstream call and shares the result.
+> There's a test asserting 50 concurrent requests produce exactly one call.
+
+### "Why not use pgvector or a proper vector database?"
+
+> At the 10k-entry cap a brute-force scan is well under a millisecond, so an
+> ANN index would trade a real operational dependency for a speedup on
+> something that isn't the bottleneck. At millions of entries that flips and
+> you'd want HNSW or pgvector. I'd rather state the threshold at which the
+> decision changes than adopt infrastructure preemptively.
+
+### "Isn't a hashing embedder just lexical matching, not semantic?"
+
+Concede this immediately — it's true.
+
+> Yes. The default embedder is lexical and labelled as such in the code. Real
+> sentence embeddings are supported and used when installed; the fallback
+> exists so the project clones and runs without a 2.5GB torch download.
+>
+> The part I'd defend isn't the embedder, it's that the cache is
+> embedder-agnostic and *measured* either way. Each backend carries its own
+> calibrated threshold, because they score similarity on different scales and
+> one global constant can't be right for both.
+
+### "Why does the fallback catch a bare Exception?"
+
+A reviewer will flag this — have the answer ready.
+
+> Normally I'd agree that's too broad. Here it's deliberate: an optional
+> dependency that's installed but *unusable* must degrade rather than take the
+> gateway down, and it doesn't fail with ImportError. This machine hit
+> `OSError: WinError 1114` from torch failing to load a DLL. My original
+> ImportError-only version let that escape straight out of application startup,
+> so the gateway wouldn't boot because an *optional* feature was broken. The
+> comment in the code explains exactly that.
+
+### Things to be honest about
+
+- The default embedder is lexical, not semantic.
+- The entity guard only recognises numeric identifiers. Names like
+  `tenant alpha` vs `tenant beta` still rely on the threshold.
+- Cache state is per-process, so N replicas means N independent caches.
+- The traffic replay uses a synthetic Zipf model, not real production traffic.

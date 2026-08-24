@@ -2,7 +2,7 @@
 name = "llm-gateway"
 version = "0.1.0"
 description = "A reliability-focused LLM gateway: hedged requests, circuit breaking, and semantic caching."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -36,8 +36,16 @@ testpaths = ["tests"]
 
 [tool.mypy]
 strict = true
-python_version = "3.11"
+python_version = "3.12"
 files = ["src", "tests", "chaos"]
+
+# The optional embedding stack is not our code to type-check, and its stubs
+# require a newer language target than the rest of the project. Skipping it
+# keeps `mypy --strict` meaningful on the code we actually own.
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*", "numpy.*", "torch.*", "transformers.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
