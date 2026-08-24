@@ -8,10 +8,12 @@ and folding it in would make both harder to test. This layer composes them.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import structlog
 
 from gateway.cache.semantic import SemanticCache
+from gateway.observability import metrics
 from gateway.reliability.executor import ReliableExecutor
 from gateway.types import ChatRequest, ChatResponse
 
@@ -46,10 +48,24 @@ class GatewayService:
         thrown away. Collapsing them into one upstream call turns a
         cache-stampede into a single request.
         """
-        if self.cache is not None:
+        started = time.perf_counter()
+
+        if self.cache is not None and not self.cache.is_cacheable(request):
+            # Distinguishing "skipped" from "miss" matters: reporting a skip as
+            # a miss makes the hit rate on a dashboard look like a cache that is
+            # working badly, rather than one that was never consulted.
+            metrics.cache_operations_total.labels(result="skipped").inc()
+        elif self.cache is not None:
             hit = self.cache.lookup(request)
             if hit is not None:
+                metrics.cache_operations_total.labels(result="hit").inc()
+                metrics.requests_total.labels(outcome="cached").inc()
+                metrics.request_duration_seconds.labels(outcome="cached").observe(
+                    time.perf_counter() - started
+                )
+                metrics.tokens_saved_total.inc(hit.usage.total_tokens)
                 return hit
+            metrics.cache_operations_total.labels(result="miss").inc()
 
         key = self._exact_key(request)
         existing = self._inflight.get(key)
@@ -67,12 +83,26 @@ class GatewayService:
             # Waiters must see the failure too, otherwise they hang forever.
             if not future.done():
                 future.set_exception(exc)
+            metrics.requests_total.labels(outcome="error").inc()
+            metrics.request_duration_seconds.labels(outcome="error").observe(
+                time.perf_counter() - started
+            )
             raise
         else:
             if not future.done():
                 future.set_result(response)
             if self.cache is not None:
                 self.cache.store(request, response)
+            metrics.requests_total.labels(outcome="success").inc()
+            metrics.request_duration_seconds.labels(outcome="success").observe(
+                time.perf_counter() - started
+            )
+            metrics.tokens_total.labels(
+                provider=response.provider, direction="prompt"
+            ).inc(response.usage.prompt_tokens)
+            metrics.tokens_total.labels(
+                provider=response.provider, direction="completion"
+            ).inc(response.usage.completion_tokens)
             return response
         finally:
             # Always release the slot. Leaving a completed future in the map

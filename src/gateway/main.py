@@ -13,13 +13,18 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
 from gateway.cache.semantic import SemanticCache
 from gateway.config import get_settings
+from gateway.observability import metrics
+from gateway.providers.base import Provider
+from gateway.providers.gemini import GeminiProvider
 from gateway.providers.mock import MockBehaviour, MockProvider
+from gateway.providers.openai_compat import groq_provider
 from gateway.reliability.budget import RetryBudget
 from gateway.reliability.executor import ReliableExecutor
 from gateway.service import GatewayService
@@ -69,10 +74,24 @@ def build_service() -> GatewayService:
     Real providers are added when their keys are present.
     """
     settings = get_settings()
-    providers = [
-        MockProvider("mock-primary", MockBehaviour.healthy()),
-        MockProvider("mock-backup", MockBehaviour.healthy()),
-    ]
+
+    # Real providers first -- they take priority in the failover order -- with
+    # mocks always appended as a last resort. That ordering means the gateway
+    # is useful with keys and still demonstrable without them, and it is why
+    # `git clone && uvicorn` works on a reviewer's machine.
+    providers: list[Provider] = []
+    if settings.groq_api_key:
+        providers.append(groq_provider(settings.groq_api_key, settings.groq_model))
+    if settings.gemini_api_key:
+        providers.append(
+            GeminiProvider(api_key=settings.gemini_api_key, model=settings.gemini_model)
+        )
+    providers.extend(
+        [
+            MockProvider("mock-primary", MockBehaviour.healthy()),
+            MockProvider("mock-backup", MockBehaviour.healthy()),
+        ]
+    )
     executor = ReliableExecutor(
         providers,
         hedge_delay_s=settings.hedge_delay_ms / 1000,
@@ -86,6 +105,7 @@ def build_service() -> GatewayService:
         SemanticCache(
             threshold=settings.cache_similarity_threshold,
             max_entries=settings.cache_max_entries,
+            max_temperature=settings.cache_max_temperature,
         )
         if settings.cache_enabled
         else None
@@ -138,6 +158,23 @@ async def healthz() -> dict[str, Any]:
             "tokens_saved": s.tokens_saved,
         }
     return body
+
+
+@app.get("/metrics")
+async def prometheus_metrics() -> Response:
+    """Prometheus scrape endpoint.
+
+    Breaker states are sampled here rather than pushed on every transition: a
+    gauge only needs its value at scrape time, and pushing would couple the
+    reliability layer to the metrics layer for nothing.
+    """
+    service: GatewayService = app.state.service
+    metrics.record_circuit_states(
+        {name: b.state.value for name, b in service.executor.breakers.items()}
+    )
+    metrics.record_hedges(service.executor.hedges_fired, service.executor.hedges_won)
+
+    return Response(content=generate_latest(metrics.REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/v1/chat/completions")

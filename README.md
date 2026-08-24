@@ -65,6 +65,45 @@ Most LLM proxies focus on routing and cost tracking. This one focuses on the har
 | Circuit breaker | Paying a full timeout per doomed request | — |
 | Single-flight | A cache stampede on a cold key | Caching alone doesn't help when everyone misses at once |
 
+## Providers
+
+Two adapters ship, proving the abstraction holds across genuinely different
+wire formats:
+
+| Adapter | Covers | Notes |
+|---|---|---|
+| `OpenAICompatProvider` | Groq, Together, Fireworks, OpenRouter, vLLM, Ollama | One adapter, change the base URL |
+| `GeminiProvider` | Google Gemini | Different schema entirely: `contents`/`parts`, no system role, header auth |
+
+Both are tested against recorded wire formats using `httpx.MockTransport`, so
+the real request-building, status-mapping and SSE-parsing code runs **with no
+network and no API keys**.
+
+The status mapping is the contract between a provider and the reliability
+layer, and it is where naive HTTP clients quietly go wrong:
+
+| Upstream | Classified as | Consequence |
+|---|---|---|
+| 429 | `RateLimitError` | Retryable, honouring `Retry-After` |
+| 5xx, 408, 409, 425 | `TransientProviderError` | Retryable, counts against the breaker |
+| Other 4xx | `PermanentProviderError` | Never retried, never trips the breaker |
+| Timeout / connection reset | `TransientProviderError` | Fails over |
+
+Set `GATEWAY_GROQ_API_KEY` or `GATEWAY_GEMINI_API_KEY` (both have free tiers)
+and real providers take priority in the failover order, with mocks appended as
+a last resort — so the gateway is useful with keys and still demonstrable
+without them.
+
+## Observability
+
+`GET /metrics` exposes Prometheus series for request outcomes and latency
+histograms, per-provider token consumption, cache hit/miss/skip, hedge
+counters, and circuit-breaker state per provider.
+
+Every label has a small bounded value set. A label carrying prompts or user ids
+would grow time series until scrapes time out — cardinality explosion takes
+down monitoring exactly when it is needed.
+
 Hedging is the centrepiece. Tail latency usually comes from one unlucky *instance*, not a
 slow *service* — so the fix is to stop waiting and ask someone else, while keeping the
 original in flight in case it lands first.
@@ -131,7 +170,7 @@ first byte — so mid-stream errors are delivered as an SSE error event.
 ```bash
 pip install -e ".[dev]"
 
-pytest                          # 36 tests, incl. property-based
+pytest                          # 61 tests, incl. property-based
 mypy && ruff check .            # strict, clean
 python -m chaos.run             # reliability benchmarks
 python -m chaos.cache_bench     # cache calibration
@@ -190,6 +229,11 @@ test_different_identifiers_never_match            no cross-tenant cache hits
 test_namespace_prefix_cannot_collide              entity "1" vs entity "12"
 test_single_flight_collapses_concurrent_duplicates  50 requests -> 1 upstream call
 test_handles_concurrent_load                      100 requests, nothing serialised
+test_client_errors_are_permanent                  401/400 never retried
+test_rate_limit_honours_retry_after               provider backoff respected
+test_stream_skips_keepalives_and_malformed_chunks SSE robustness
+test_gemini_handles_safety_filtered_response      no KeyError on filtered output
+test_hedge_counters_only_ever_increment           counters never move backwards
 ```
 
 ## Status
@@ -197,10 +241,11 @@ test_handles_concurrent_load                      100 requests, nothing serialis
 Working: async FastAPI service, OpenAI-compatible API, SSE streaming with commit-aware
 failover, circuit breaker with single-probe recovery, sliding-window retry budget, hedged
 requests with cancellation, full-jitter backoff, semantic cache with entity guarding and
-calibration harness, single-flight deduplication, configurable mock provider, chaos
-benchmarks. CI on Python 3.12 and 3.13.
+calibration harness, single-flight deduplication, Groq/OpenAI-compatible and Gemini
+adapters, Prometheus metrics, configurable mock provider, chaos benchmarks. CI on
+Python 3.12 and 3.13. 61 tests.
 
-Next: Groq and Gemini adapters, Prometheus metrics, persistent cost ledger.
+Next: persistent cost ledger, adaptive hedge delay tracking rolling p95.
 
 ## License
 

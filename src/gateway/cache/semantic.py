@@ -79,7 +79,7 @@ class SemanticCache:
         embedder: Embedder | None = None,
         threshold: float | None = None,
         max_entries: int = 10_000,
-        max_temperature: float = 0.3,
+        max_temperature: float = 0.8,
     ) -> None:
         self.embedder = embedder or default_embedder()
         # Fall back to the embedder's calibrated threshold rather than a global
@@ -133,14 +133,28 @@ class SemanticCache:
             f"|{request.max_tokens}|{entities}"
         )
 
-    def _cacheable(self, request: ChatRequest) -> bool:
+    def is_cacheable(self, request: ChatRequest) -> bool:
+        """Whether this request may participate in the cache at all.
+
+        The ceiling exists so a caller asking for variety is not handed a
+        stored answer. Choosing its value is a real tradeoff: it was originally
+        0.3, which sounded appropriately conservative until a smoke test showed
+        three identical requests producing three upstream calls. The OpenAI-
+        compatible default temperature is 0.7, so a 0.3 ceiling meant the cache
+        never engaged for a default request and was, in practice, dead code.
+
+        0.8 covers ordinary assistant traffic while still excluding the
+        explicitly creative range (1.0+). Requests are namespaced by
+        temperature regardless, so two different temperatures never share an
+        entry.
+        """
         return request.temperature <= self.max_temperature
 
     # -- API ----------------------------------------------------------------
 
     def lookup(self, request: ChatRequest) -> ChatResponse | None:
         """Return a stored response if one is close enough, else None."""
-        if not self._cacheable(request):
+        if not self.is_cacheable(request):
             self.stats.skipped += 1
             return None
 
@@ -185,7 +199,7 @@ class SemanticCache:
         )
 
     def store(self, request: ChatRequest, response: ChatResponse) -> None:
-        if not self._cacheable(request):
+        if not self.is_cacheable(request):
             return
 
         prompt = request.cache_key_text()

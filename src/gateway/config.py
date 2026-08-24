@@ -56,14 +56,27 @@ class Settings(BaseSettings):
 
     # --- Semantic cache ----------------------------------------------------
     cache_enabled: bool = True
-    cache_similarity_threshold: float = 0.92
-    """Cosine similarity above which a cached response is considered a hit.
 
-    This is a precision/recall dial with real money on one side and real
-    correctness on the other. See DESIGN.md for how the value was chosen.
+    cache_similarity_threshold: float | None = None
+    """Cosine similarity above which a cached response is treated as a hit.
+
+    Defaults to None, meaning "use the embedder's calibrated value" -- see
+    `chaos/cache_bench.py`, which derives it from a labelled set. Hardcoding a
+    number here would silently override that calibration, and did: an earlier
+    default of 0.92 shadowed the measured 0.72 for the lexical embedder, so the
+    benchmark was tuning a value the running service never used.
+
+    Set it explicitly only to override the calibration deliberately.
     """
 
     cache_max_entries: int = 10_000
+
+    cache_max_temperature: float = 0.8
+    """Requests above this temperature bypass the cache entirely.
+
+    A caller asking for variety should not be served a stored answer. Set below
+    the OpenAI-compatible default of 0.7 and the cache never engages at all.
+    """
 
 
 @lru_cache(maxsize=1)
